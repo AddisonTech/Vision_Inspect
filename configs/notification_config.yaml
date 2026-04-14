@@ -1,0 +1,22 @@
+notifications:
+  enabled: true
+  severity_thresholds:
+    teams: high
+    email: critical
+  teams:
+    enabled: false
+    webhook_url: ""
+    mention_channel: false
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    smtp_use_tls: true
+    smtp_username: ""
+    smtp_password: ""
+    from_address: ""
+    recipients:
+      - ""
+  message_template:
+    subject: "Vision_Inspect Alert [{severity}] - {input_source}"
+    body_prefix: "Vision_Inspect has detected an anomaly requiring human review."

@@ -1,0 +1,33 @@
+ollama:
+  base_url: http://localhost:11434
+  timeout_seconds: 120
+  max_retries: 3
+
+# Quant guide: Q5_K_M recommended, Q4_K_M acceptable, Q8_0 near-lossless, IQ3_M CPU fallback
+primary_model:
+  name: qwen3vl:8b
+  quant: Q5_K_M
+  context_length: 8192
+  temperature: 0.1
+  use_cases:
+    - defect_detection
+    - surface_anomaly_classification
+    - engineering_drawing_interpretation
+    - process_deviation_flagging
+
+fallback_model:
+  name: internvl3:8b
+  quant: Q5_K_M
+  temperature: 0.05
+  use_cases:
+    - nameplate_ocr
+    - serial_number_extraction
+    - label_reading
+    - high_resolution_text
+
+routing:
+  ocr_task_types:
+    - nameplate_ocr
+    - serial_number_extraction
+    - label_reading
+  retry_below_confidence: 0.65

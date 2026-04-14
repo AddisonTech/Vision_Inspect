@@ -1,0 +1,37 @@
+preprocessing:
+  brightness_target: 128
+  brightness_tolerance: 30
+  contrast_min: 0.4
+  resize_max_dimension: 1024
+  normalize: true
+
+defect_detection:
+  sensitivity: 0.72
+  min_defect_area_px: 25
+  ignore_regions: []
+
+surface_anomaly:
+  sensitivity: 0.68
+  classes_to_ignore: []
+
+ocr:
+  min_confidence: 0.80
+  expected_formats:
+    serial_number: "^[A-Z09\-]{6,20}$"
+    nameplate_fields:
+      - manufacturer
+      - model_number
+      - serial_number
+      - voltage
+      - current
+      - power
+
+process_deviation:
+  sensitivity: 0.60
+  reference_image_path: ""
+  max_deviation_percent: 15
+
+video:
+  frame_sample_interval: 5
+  drift_window_frames: 30
+  anomaly_trend_threshold: 3

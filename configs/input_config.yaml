@@ -1,0 +1,21 @@
+input:
+  mode: live_camera
+  manual_upload:
+    enabled: true
+    accepted_formats: [jpg, jpeg, png, bmp, tiff, mp4, avi, mkv]
+    max_file_size_mb: 50
+  live_camera:
+    enabled: true
+    device_index: 0
+    stream_url: ""
+    capture_width: 1280
+    capture_height: 720
+    fps: 30
+    buffer_frames: 3
+  scheduled_capture:
+    enabled: false
+    interval_seconds: 60
+    duration_seconds: 5
+  manual_trigger:
+    enabled: true
+    endpoint: /inspect
