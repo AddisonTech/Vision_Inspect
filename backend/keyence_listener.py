@@ -1,148 +1,200 @@
 """
-Keyence VS-series Data Output TCP listener.
+Keyence VS-series EtherNet/IP result poller.
 
-The Keyence camera acts as a TCP CLIENT — it connects to us after each
-inspection and pushes a result frame.  This module starts an asyncio TCP
-server that accepts those connections, parses the payload, and keeps the
-latest result in memory for the rest of the application to read.
+Polls Assembly Object instance 100 (camera → scanner) via explicit CIP
+messaging (TCP port 44818).  No PLC or cyclic I/O connection required —
+just a direct pycomm3 CIPDriver read on a 0.25-second interval.
 
-Typical VS-series output over TCP (ASCII mode):
-  - Each inspection sends one frame terminated with CR+LF ("\r\n")
-  - Fields are comma-separated, configurable in VS Creator's Data Output tool
-  - The first field is always the overall judgement: "OK" or "NG"
-  - Example: "OK,1,0.9523\r\n"   (judgement, program_no, score)
-  - Example: "NG,1,0.1234\r\n"
+Assembly 100 layout (VS series, confirmed empirically):
+  byte[ 0]        bit 0 = Run mode active (1 = running)
+  byte[ 2]        bit 1 = NG/FAIL result  (1 = FAIL, 0 = PASS)
+                  bit 3 = END / inspection done
+                  bit 4 = (result toggle / new-result flag)
+  byte[ 3]        bit 2 = program loaded / ready
+  bytes[20-23]    UINT32 LE = active program number
+  bytes[24-27]    UINT32 LE = inspection count (increments each trigger)
 
-The listener is tolerant of unknown formats — it logs raw bytes so you can
-inspect exactly what the camera sends and adjust _parse() if needed.
-
-Configuration (input_config.yaml):
-  input.live_camera.keyence_output_port  (default 9876)
+Public API
+----------
+  start_poller(host, port=44818)  → asyncio.Task  (call from startup event)
+  get_latest_result()             → dict
+  is_connected()                  → bool
 """
 
 import asyncio
 import logging
+import struct
 import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared state (module-level singleton, thread/coroutine-safe via asyncio)
+# Shared state
 # ---------------------------------------------------------------------------
 
 class _State:
     def __init__(self):
         self.pass_fail: Optional[str] = None   # "PASS" | "FAIL" | None
-        self.raw: Optional[str] = None         # last raw payload string
-        self.fields: list = []                 # parsed CSV fields
-        self.timestamp: Optional[float] = None # time.time() of last result
-        self.connection_count: int = 0         # total connections received
+        self.raw_bytes: Optional[bytes] = None
+        self.inspection_count: int = 0
+        self.program_number: int = 0
+        self.run_mode: bool = False
+        self.timestamp: Optional[float] = None
+        self.connected: bool = False
 
 
 _state = _State()
+_task: Optional[asyncio.Task] = None
 
 
 def get_latest_result() -> dict:
-    """Return the most recent camera output result (or empty dict if none yet)."""
     if _state.timestamp is None:
         return {}
     return {
-        "pass_fail": _state.pass_fail,
-        "raw": _state.raw,
-        "fields": _state.fields,
-        "timestamp": _state.timestamp,
-        "connection_count": _state.connection_count,
+        "pass_fail":        _state.pass_fail,
+        "inspection_count": _state.inspection_count,
+        "program_number":   _state.program_number,
+        "run_mode":         _state.run_mode,
+        "timestamp":        _state.timestamp,
+        "connected":        _state.connected,
+    }
+
+
+def is_connected() -> bool:
+    return _state.connected
+
+
+# ---------------------------------------------------------------------------
+# Assembly decoder
+# ---------------------------------------------------------------------------
+
+def _decode(data: bytes) -> dict:
+    """
+    Parse Assembly 100.  Returns dict with run_mode, pass_fail,
+    inspection_count, program_number.
+    """
+    if len(data) < 28:
+        return {}
+
+    run_mode        = bool(data[0] & 0x01)
+    fail_bit        = bool(data[2] & 0x02)   # bit 1 of byte 2 = NG
+    pass_fail       = "FAIL" if fail_bit else "PASS"
+    program_number  = struct.unpack_from("<I", data, 20)[0]
+    inspection_count = struct.unpack_from("<I", data, 24)[0]
+
+    return {
+        "run_mode":        run_mode,
+        "pass_fail":       pass_fail,
+        "inspection_count": inspection_count,
+        "program_number":  program_number,
     }
 
 
 # ---------------------------------------------------------------------------
-# Parser
+# Async poller
 # ---------------------------------------------------------------------------
 
-def _parse(payload: str) -> tuple[Optional[str], list]:
+async def _poll_loop(host: str, port: int, interval: float = 0.25):
     """
-    Parse one inspection result frame from the camera.
-
-    Returns (pass_fail, fields) where pass_fail is "PASS", "FAIL", or None
-    if the judgement field is not recognisable.
+    Open a CIP session to the camera and poll Assembly 100 continuously.
+    Reconnects automatically on any error.
     """
-    payload = payload.strip()
-    if not payload:
-        return None, []
+    from pycomm3 import CIPDriver, Services  # imported here to keep startup fast
 
-    # The VS series always sends a comma-separated list; the first field is
-    # the overall judgement.
-    fields = [f.strip() for f in payload.split(",")]
-    first = fields[0].upper() if fields else ""
+    last_count = -1
 
-    if first in ("OK", "PASS", "0"):
-        pass_fail = "PASS"
-    elif first in ("NG", "FAIL", "1"):
-        pass_fail = "FAIL"
-    else:
-        # Unknown format — still return all fields, caller can inspect raw
-        pass_fail = None
-        logger.warning("keyence_listener: unrecognised judgement field %r in %r", first, payload)
-
-    return pass_fail, fields
-
-
-# ---------------------------------------------------------------------------
-# Async TCP server
-# ---------------------------------------------------------------------------
-
-async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    peer = writer.get_extra_info("peername")
-    _state.connection_count += 1
-    logger.info("keyence_listener: connection #%d from %s", _state.connection_count, peer)
-
-    try:
-        # Read the full frame.  VS cameras send one frame per connection and
-        # then close, so we read until EOF.  Guard with a timeout so a stale
-        # connection doesn't block indefinitely.
-        raw_bytes = await asyncio.wait_for(reader.read(4096), timeout=5.0)
-        if not raw_bytes:
-            logger.debug("keyence_listener: empty payload from %s", peer)
-            return
-
-        raw_str = raw_bytes.decode("ascii", errors="replace")
-        logger.info("keyence_listener: received %d bytes from %s: %r", len(raw_bytes), peer, raw_str)
-
-        pass_fail, fields = _parse(raw_str)
-        _state.pass_fail = pass_fail
-        _state.raw = raw_str.strip()
-        _state.fields = fields
-        _state.timestamp = time.time()
-
-        logger.info(
-            "keyence_listener: parsed → pass_fail=%s  fields=%s",
-            pass_fail, fields,
-        )
-
-    except asyncio.TimeoutError:
-        logger.warning("keyence_listener: read timeout from %s", peer)
-    except Exception as exc:
-        logger.error("keyence_listener: error handling client %s: %s", peer, exc)
-    finally:
+    while True:
         try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:
-            pass
+            logger.info("keyence_eip: connecting to %s:%d …", host, port)
+
+            # CIPDriver is synchronous — run in executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+
+            def _open_and_poll():
+                driver = CIPDriver(f"{host}:{port}")
+                driver.open()
+                return driver
+
+            driver = await loop.run_in_executor(None, _open_and_poll)
+            _state.connected = True
+            logger.info("keyence_eip: CIP session open")
+
+            try:
+                while True:
+                    def _read():
+                        resp = driver.generic_message(
+                            service=Services.get_attribute_single,
+                            class_code=b'\x04',
+                            instance=100,
+                            attribute=b'\x03',
+                            data_type=None,
+                            name='asm100',
+                        )
+                        return resp.value if resp and resp.value else None
+
+                    raw = await loop.run_in_executor(None, _read)
+
+                    if raw:
+                        decoded = _decode(raw)
+                        if decoded:
+                            new_count = decoded["inspection_count"]
+                            _state.run_mode = decoded["run_mode"]
+                            _state.program_number = decoded["program_number"]
+                            _state.connected = True
+
+                            if new_count != last_count:
+                                _state.pass_fail = decoded["pass_fail"]
+                                _state.inspection_count = new_count
+                                _state.raw_bytes = raw
+                                _state.timestamp = time.time()
+                                last_count = new_count
+                                logger.info(
+                                    "keyence_eip: new result — %s  count=%d  prog=%d",
+                                    decoded["pass_fail"], new_count, decoded["program_number"],
+                                )
+
+                    await asyncio.sleep(interval)
+
+            finally:
+                _state.connected = False
+                try:
+                    await loop.run_in_executor(None, driver.close)
+                except Exception:
+                    pass
+
+        except asyncio.CancelledError:
+            logger.info("keyence_eip: poller cancelled")
+            _state.connected = False
+            return
+        except Exception as exc:
+            logger.warning("keyence_eip: error (%s) — reconnecting in 5s", exc)
+            _state.connected = False
+            await asyncio.sleep(5)
 
 
-async def start_listener(port: int = 9876, host: str = "0.0.0.0") -> asyncio.Server:
-    """
-    Start the TCP server.  Returns the asyncio.Server object (already
-    running as a background task — no need to await serve_forever()).
+def start_poller(host: str, port: int = 44818) -> asyncio.Task:
+    """Start the EtherNet/IP poller as a background task."""
+    global _task
+    if _task and not _task.done():
+        logger.warning("keyence_eip: poller already running")
+        return _task
+    _task = asyncio.ensure_future(_poll_loop(host, port))
+    logger.info("keyence_eip: poller started → %s:%d", host, port)
+    return _task
 
-    Call this once from the FastAPI startup event:
-        server = await keyence_listener.start_listener(port=9876)
-    """
-    server = await asyncio.start_server(_handle_client, host, port)
-    addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
-    logger.info("keyence_listener: TCP server listening on %s", addrs)
-    # Schedule serve_forever() as a background task so it doesn't block startup
-    asyncio.ensure_future(server.serve_forever())
-    return server
+
+def stop_poller():
+    global _task
+    if _task and not _task.done():
+        _task.cancel()
+        _task = None
+
+
+# ---------------------------------------------------------------------------
+# Keep backward-compat shims so main.py import doesn't break
+# ---------------------------------------------------------------------------
+def start_client(host: str, port: int = 8500):
+    """Deprecated — now uses EtherNet/IP poller instead."""
+    logger.info("keyence: start_client() redirecting to EtherNet/IP poller on %s", host)
+    return start_poller(host)

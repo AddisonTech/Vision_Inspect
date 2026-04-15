@@ -72,9 +72,9 @@ async def startup():
         gige_ip=cam_cfg.get("gige_ip", ""),
         cti_path=cam_cfg.get("cti_path", ""),
     )
-    kp = cam_cfg.get("keyence_output_port", 9876)
-    await keyence_listener.start_listener(port=kp)
-    logger.info("Keyence Data Output listener started on port %d", kp)
+    if cam_cfg.get("gige_ip"):
+        keyence_listener.start_poller(host=cam_cfg["gige_ip"], port=44818)
+        logger.info("Keyence EtherNet/IP poller started → %s:44818", cam_cfg["gige_ip"])
 
 
 # ---------------------------------------------------------------------------
@@ -364,14 +364,16 @@ async def select_camera(body: dict):
 @app.get("/keyence/result")
 async def keyence_result():
     """
-    Returns the most recent result frame pushed by the Keyence camera's
-    Data Output tool.  Returns 204 if the camera has not sent any data yet.
+    Returns the most recent result pushed by the camera over the
+    non-procedural TCP connection, plus connection status.
+    Returns 204 if no inspection data has arrived yet.
     """
     result = keyence_listener.get_latest_result()
+    connected = keyence_listener.is_connected()
     if not result:
         from fastapi.responses import Response
-        return Response(status_code=204)
-    return result
+        return Response(status_code=204, headers={"X-Camera-Connected": str(connected)})
+    return {**result, "connected": connected}
 
 
 # ---------------------------------------------------------------------------
