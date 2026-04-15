@@ -17,7 +17,7 @@ surface_anomaly:
 ocr:
   min_confidence: 0.80
   expected_formats:
-    serial_number: "^[A-Z09\-]{6,20}$"
+    serial_number: '^[A-Z09\-]{6,20}$'
     nameplate_fields:
       - manufacturer
       - model_number

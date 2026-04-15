@@ -18,8 +18,21 @@ def generate_report(job_id: str, input_source: str, inference_result: dict,
     if not annotated_image_path:
         annotated_image_path = "*No annotated frame available.*"
     
-    findings_table = "\n".join([f"| {label} | {confidence} | {severity} | {description}" for label, confidence, severity, description in inference_result.get("findings", [])])
-    if not findings_table:
+    raw_findings = inference_result.get("findings", [])
+    if raw_findings:
+        rows = []
+        for f in raw_findings:
+            if isinstance(f, dict):
+                label = f.get("label", "")
+                conf = f.get("confidence", "")
+                sev = f.get("severity", "")
+                desc = f.get("description", "")
+            else:
+                label, conf, sev, desc = (list(f) + ["", "", "", ""])[:4]
+            rows.append(f"| {label} | {conf} | {sev} | {desc} |")
+        header = "| Finding | Confidence | Severity | Description |\n|---------|-----------|----------|-------------|"
+        findings_table = header + "\n" + "\n".join(rows)
+    else:
         findings_table = "*No findings.*"
     
     proxy_metrics_str = "\n".join([f"{key}: {value}" for key, value in proxy_metrics.items()])
@@ -29,11 +42,11 @@ def generate_report(job_id: str, input_source: str, inference_result: dict,
     
     report_content = f"""
 # Vision_Inspect Report — {timestamp}
-**Job ID**: {job_id}, **Input Source**: {input_source}, **Model Version**: {model_version}, **Model Used**: {inference_result.get("model_used", "Unknown")}
+**Job ID**: {job_id}, **Input Source**: {input_source}, **Model Version**: {model_version}, **Model Used**: {inference_result.get("model", inference_result.get("model_used", "Unknown"))}
 ## Findings
 {findings_table}
 ## Pass/Fail Verdict
-{inference_result.get("verdict", "UNKNOWN").upper()}
+{inference_result.get("pass_fail", inference_result.get("verdict", "UNKNOWN")).upper()}
 ## Proxy Metrics
 {proxy_metrics_str}
 ## Annotated Frame

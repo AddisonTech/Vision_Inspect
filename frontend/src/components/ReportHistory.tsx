@@ -19,7 +19,7 @@ const ReportHistory: React.FC<ReportHistoryProps> = ({ reports, onDownload }) =>
           <List dense>
             {reports.map((report) => (
               <ListItem key={report.filename}>
-                <ListItemText primary={report.filename} secondary={`${report.size_kb} KB`} />
+                <ListItemText primary={report.filename} secondary={`${(report.size_bytes / 1024).toFixed(1)} KB`} />
                 <IconButton color="secondary" onClick={() => onDownload(report.filename)}>
                   <DownloadIcon />
                 </IconButton>

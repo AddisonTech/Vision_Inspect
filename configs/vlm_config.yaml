@@ -5,8 +5,8 @@ ollama:
 
 # Quant guide: Q5_K_M recommended, Q4_K_M acceptable, Q8_0 near-lossless, IQ3_M CPU fallback
 primary_model:
-  name: qwen3vl:8b
-  quant: Q5_K_M
+  name: qwen2.5vl:7b
+  quant: Q4_K_M
   context_length: 8192
   temperature: 0.1
   use_cases:
@@ -16,8 +16,8 @@ primary_model:
     - process_deviation_flagging
 
 fallback_model:
-  name: internvl3:8b
-  quant: Q5_K_M
+  name: minicpm-v:8b
+  quant: Q4_K_M
   temperature: 0.05
   use_cases:
     - nameplate_ocr

@@ -2,7 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import { InspectionResult, Report } from './types';
 
 const client: AxiosInstance = axios.create({
-  baseURL: '/api',
+  baseURL: '/',
 });
 
 export const uploadImage = async (file: File, taskType: string): Promise<InspectionResult> => {
@@ -41,5 +41,20 @@ export const listReports = async (): Promise<Report[]> => {
 
 export const getHealth = async (): Promise<any> => {
   const response = await client.get('/health');
+  return response.data;
+};
+
+export const listCameras = async (): Promise<any> => {
+  const response = await client.get('/cameras');
+  return response.data;
+};
+
+export const toggleCamera = async (): Promise<{ paused: boolean }> => {
+  const response = await client.post('/cameras/toggle');
+  return response.data;
+};
+
+export const selectCamera = async (deviceIndex: number, streamUrl: string = ''): Promise<any> => {
+  const response = await client.post('/cameras/select', { device_index: deviceIndex, stream_url: streamUrl });
   return response.data;
 };

@@ -4,21 +4,27 @@ const useWebSocket = (url: string) => {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reconnectTrigger, setReconnectTrigger] = useState(0);
   const webSocketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    let intentionallyClosed = false;
+
+    // Tear down the previous socket without triggering its reconnect logic.
     if (webSocketRef.current) {
+      webSocketRef.current.onclose = null;
       webSocketRef.current.close();
     }
 
-    webSocketRef.current = new WebSocket(url);
+    const ws = new WebSocket(url);
+    webSocketRef.current = ws;
 
-    webSocketRef.current.onopen = () => {
+    ws.onopen = () => {
       setConnected(true);
       setError(null);
     };
 
-    webSocketRef.current.onmessage = (event) => {
+    ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         setLastMessage(data);
@@ -27,23 +33,23 @@ const useWebSocket = (url: string) => {
       }
     };
 
-    webSocketRef.current.onerror = (error) => {
-      setError(`WebSocket error: ${error.message}`);
+    ws.onerror = () => {
+      setError('WebSocket error');
     };
 
-    webSocketRef.current.onclose = () => {
+    ws.onclose = () => {
+      if (intentionallyClosed) return;
       setConnected(false);
       setTimeout(() => {
-        useWebSocket(url); // Recreate the WebSocket instance
+        setReconnectTrigger((n) => n + 1);
       }, 3000);
     };
 
     return () => {
-      if (webSocketRef.current) {
-        webSocketRef.current.close();
-      }
+      intentionallyClosed = true;
+      ws.close();
     };
-  }, [url]);
+  }, [url, reconnectTrigger]);
 
   return { connected, lastMessage, error };
 };

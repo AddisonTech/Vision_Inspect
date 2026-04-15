@@ -52,34 +52,58 @@ class Ingester:
         )
 
     def ingest_camera_frame(self) -> IngestResult:
-        cap = cv2.VideoCapture(self.stream_url if self.stream_url else self.device_index)
+        # Prefer the shared CameraManager (already open, no re-init cost).
+        try:
+            from backend.camera_manager import get_camera_manager
+            cam = get_camera_manager()
+            if cam.is_available():
+                frame = cam.get_latest_frame()  # BGR ndarray
+                return IngestResult(
+                    frames=[frame],
+                    source_type="live_camera",
+                    source_path="",
+                    timestamp=self._now(),
+                    frame_count=1,
+                    width=frame.shape[1],
+                    height=frame.shape[0],
+                )
+        except Exception:
+            pass  # Fall through to direct capture below
+
+        # Direct capture fallback (e.g. CameraManager not started).
+        import sys
+        source = self.stream_url if self.stream_url else self.device_index
+        backend_flag = cv2.CAP_DSHOW if (sys.platform == "win32" and isinstance(source, int)) else 0
+        cap = cv2.VideoCapture(source, backend_flag) if backend_flag else cv2.VideoCapture(source)
+
         if not cap.isOpened():
             return IngestResult(
-                frames=[],
-                source_type="live_camera",
-                source_path="",
-                timestamp=self._now(),
-                frame_count=0,
-                width=0,
-                height=0
+                frames=[], source_type="live_camera", source_path="",
+                timestamp=self._now(), frame_count=0, width=0, height=0,
             )
-        
+
+        # Discard buffer_frames - 1 stale frames, keep the freshest.
+        frame = None
         for _ in range(self.buffer_frames):
-            ret, frame = cap.read()
-            if not ret:
-                break
-        
-        frames = [cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) for _ in range(min(1, self.buffer_frames))]
+            ret, f = cap.read()
+            if ret:
+                frame = f
         cap.release()
-        
+
+        if frame is None:
+            return IngestResult(
+                frames=[], source_type="live_camera", source_path="",
+                timestamp=self._now(), frame_count=0, width=0, height=0,
+            )
+
         return IngestResult(
-            frames=frames,
+            frames=[frame],          # BGR — do NOT reorder channels here
             source_type="live_camera",
             source_path="",
             timestamp=self._now(),
-            frame_count=len(frames),
-            width=frames[0].shape[1] if frames else 0,
-            height=frames[0].shape[0] if frames else 0
+            frame_count=1,
+            width=frame.shape[1],
+            height=frame.shape[0],
         )
 
     def ingest_scheduled(self) -> IngestResult:

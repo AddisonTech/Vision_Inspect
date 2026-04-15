@@ -15,23 +15,22 @@ const severityColorMap: { [key: string]: string } = {
 };
 
 const DefectOverlay: React.FC<DefectOverlayProps> = ({ imageUrl, findings }) => (
-  <Box
-    component="img"
-    src={imageUrl}
-    alt="Inspection Image"
-    sx={{
-      position: 'relative',
-      width: '100%',
-      height: 'auto',
-    }}
-  >
-    {findings.map((finding) => {
+  <Box sx={{ position: 'relative', width: '100%' }}>
+    {imageUrl && (
+      <Box
+        component="img"
+        src={imageUrl}
+        alt="Inspection Image"
+        sx={{ width: '100%', height: 'auto', display: 'block' }}
+      />
+    )}
+    {findings.map((finding, idx) => {
       if (finding.bbox && finding.severity) {
-        const { x1, y1, x2, y2 } = finding.bbox;
+        const [x1, y1, x2, y2] = finding.bbox;
         const severityColor = severityColorMap[finding.severity];
         return (
           <Box
-            key={finding.id}
+            key={idx}
             sx={{
               position: 'absolute',
               top: `${y1}%`,

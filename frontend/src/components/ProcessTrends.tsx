@@ -30,7 +30,7 @@ const ProcessTrends: React.FC<ProcessTrendsProps> = ({ data }) => (
       <ResponsiveContainer width="100%" height={200}>
         <LineChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-          <XAxis dataKey="timestamp" tickStyle={{ fill: '#333' }} />
+          <XAxis dataKey="timestamp" tick={{ fill: '#9ca3af' }} />
           <YAxis type="number" domain={[0, 1]} yAxisId="left" />
           <YAxis type="number" domain={[0, 1]} yAxisId="right" orientation="right" />
           <Tooltip wrapperClassName="dark-tooltip" />
