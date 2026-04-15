@@ -8,6 +8,13 @@ input:
     enabled: true
     device_index: 0
     stream_url: ""
+    # GigE Vision (Harvesters) — fill in cti_path to activate GigE mode.
+    # gige_ip is the camera's ethernet IP.
+    # cti_path must point to a GenTL producer .cti file.
+    # Recommended free producer for Windows: mvIMPACT Acquire (Matrix Vision)
+    #   .cti after install: C:/mvIMPACT Acquire/lib/x86_64/mvGenTLProducer.cti
+    gige_ip: "169.254.69.245"
+    cti_path: ""
     capture_width: 1280
     capture_height: 720
     fps: 30

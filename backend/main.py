@@ -68,6 +68,8 @@ async def startup():
     cam.start(
         device_index=cam_cfg.get("device_index", 0),
         stream_url=cam_cfg.get("stream_url", ""),
+        gige_ip=cam_cfg.get("gige_ip", ""),
+        cti_path=cam_cfg.get("cti_path", ""),
     )
 
 
@@ -340,12 +342,15 @@ async def toggle_camera():
 async def select_camera(body: dict):
     device_index = body.get("device_index", 0)
     stream_url = body.get("stream_url", "")
+    gige_ip = body.get("gige_ip", "")
+    cti_path = body.get("cti_path", "")
     if not isinstance(device_index, int) or device_index < 0:
         raise HTTPException(status_code=400, detail="device_index must be a non-negative integer")
     cam = get_camera_manager()
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, cam.switch, device_index, stream_url)
-    return {"status": "ok", "device_index": device_index, "stream_url": stream_url}
+    await loop.run_in_executor(None, cam.switch, device_index, stream_url, gige_ip, cti_path)
+    return {"status": "ok", "device_index": device_index, "stream_url": stream_url,
+            "gige_ip": gige_ip, "cti_path": cti_path}
 
 
 # ---------------------------------------------------------------------------
