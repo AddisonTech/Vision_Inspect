@@ -19,6 +19,7 @@ from backend.report_generator import generate_report, get_reports_dir
 from backend.model_versioning import get_version_manager
 from backend.camera_manager import get_camera_manager
 from backend.database import init_db, save_inspection, get_inspection, list_inspections, get_stats
+from backend import keyence_listener
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ async def startup():
         gige_ip=cam_cfg.get("gige_ip", ""),
         cti_path=cam_cfg.get("cti_path", ""),
     )
+    kp = cam_cfg.get("keyence_output_port", 9876)
+    await keyence_listener.start_listener(port=kp)
+    logger.info("Keyence Data Output listener started on port %d", kp)
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +355,23 @@ async def select_camera(body: dict):
     await loop.run_in_executor(None, cam.switch, device_index, stream_url, gige_ip, cti_path)
     return {"status": "ok", "device_index": device_index, "stream_url": stream_url,
             "gige_ip": gige_ip, "cti_path": cti_path}
+
+
+# ---------------------------------------------------------------------------
+# Keyence camera output (Data Output tool TCP push)
+# ---------------------------------------------------------------------------
+
+@app.get("/keyence/result")
+async def keyence_result():
+    """
+    Returns the most recent result frame pushed by the Keyence camera's
+    Data Output tool.  Returns 204 if the camera has not sent any data yet.
+    """
+    result = keyence_listener.get_latest_result()
+    if not result:
+        from fastapi.responses import Response
+        return Response(status_code=204)
+    return result
 
 
 # ---------------------------------------------------------------------------

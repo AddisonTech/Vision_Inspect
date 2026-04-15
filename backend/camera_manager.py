@@ -179,19 +179,32 @@ class CameraManager:
             h.add_file(self._cti_path)
             h.update()
 
-            # Match camera by IP; fall back to index 0 if not found
-            target_idx = 0
+            # Log all discovered devices for diagnostics
+            logger.info("CameraManager: %d device(s) found by GenTL producer", len(h.device_info_list))
             for i, info in enumerate(h.device_info_list):
-                ip = getattr(info, "ip_address", None) or ""
-                if ip == self._gige_ip:
+                props = {k: getattr(info, k, "?") for k in
+                         ("id_", "vendor", "model", "serial_number",
+                          "ip_address", "user_defined_name", "access_status")}
+                logger.info("CameraManager: device[%d] %s", i, props)
+
+            # Match camera by IP across all possible attribute names
+            target_idx = 0
+            found = False
+            for i, info in enumerate(h.device_info_list):
+                ip = (getattr(info, "ip_address", None)
+                      or getattr(info, "device_ip_address", None)
+                      or "")
+                # Also check the id_ string which sometimes contains the IP
+                id_str = getattr(info, "id_", "") or ""
+                if ip == self._gige_ip or self._gige_ip in id_str:
                     target_idx = i
+                    found = True
                     logger.info("CameraManager: matched camera at IP %s (index %d)", self._gige_ip, i)
                     break
-            else:
+            if not found:
                 logger.warning(
-                    "CameraManager: IP %s not found in device list %s — using index 0",
+                    "CameraManager: IP %s not matched — using index 0 (first available device)",
                     self._gige_ip,
-                    [getattr(d, "ip_address", "?") for d in h.device_info_list],
                 )
 
             with h.create(target_idx) as ia:

@@ -15,6 +15,9 @@ input:
     #   .cti after install: C:/mvIMPACT Acquire/lib/x86_64/mvGenTLProducer.cti
     gige_ip: "169.254.69.245"
     cti_path: "C:/Program Files/Balluff/ImpactAcquire/bin/x64/mvGenTLProducer.cti"
+    # TCP port our backend listens on for camera Data Output pushes.
+    # Set this to match whatever port is configured in VS Creator's Data Output tool.
+    keyence_output_port: 9876
     capture_width: 1280
     capture_height: 720
     fps: 30
