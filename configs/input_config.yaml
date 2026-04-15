@@ -14,7 +14,7 @@ input:
     # Recommended free producer for Windows: mvIMPACT Acquire (Matrix Vision)
     #   .cti after install: C:/mvIMPACT Acquire/lib/x86_64/mvGenTLProducer.cti
     gige_ip: "169.254.69.245"
-    cti_path: ""
+    cti_path: "C:/Program Files/Balluff/ImpactAcquire/bin/x64/mvGenTLProducer.cti"
     capture_width: 1280
     capture_height: 720
     fps: 30
