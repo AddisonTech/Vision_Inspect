@@ -28,3 +28,31 @@ export interface Report {
   size_bytes: number;
   created_at: string;
 }
+
+export interface InspectionRecord {
+  job_id: string;
+  timestamp: string;
+  task_type: string;
+  source: string;
+  model_used: string;
+  pass_fail: string;
+  confidence: number;
+  latency_ms: number;
+  finding_count: number;
+  notes: string;
+  findings: InspectionFinding[];
+  report_path: string;
+}
+
+export interface InspectionStats {
+  total: number;
+  today: number;
+  passed: number;
+  failed: number;
+  review: number;
+  unknown: number;
+  pass_rate: number;
+  avg_confidence: number;
+  avg_latency_ms: number;
+  by_task: { task_type: string; count: number; avg_confidence: number; passed: number }[];
+}

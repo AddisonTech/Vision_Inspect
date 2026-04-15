@@ -18,20 +18,30 @@ import InspectionResults from './components/InspectionResults';
 import ProxyMetrics from './components/ProxyMetrics';
 import ProcessTrends from './components/ProcessTrends';
 import ReportHistory from './components/ReportHistory';
+import InspectionStats from './components/InspectionStats';
 import useWebSocket from './hooks/useWebSocket';
-import { uploadImage, triggerInspection, getResults, listReports, getHealth } from './api';
-import { InspectionResult, Report, ProxyMetrics as PM } from './types';
+import {
+  uploadImage, triggerInspection, getResults,
+  listInspections, getStats, getHealth,
+} from './api';
+import { InspectionResult, InspectionRecord, InspectionStats as StatsType, ProxyMetrics as PM } from './types';
 
 const App: React.FC = () => {
   const [result, setResult] = useState<InspectionResult | undefined>(undefined);
   const [loading, setLoading] = useState(false);
-  const [reports, setReports] = useState<Report[]>([]);
+  const [inspections, setInspections] = useState<InspectionRecord[]>([]);
+  const [stats, setStats] = useState<StatsType | null>(null);
   const [trendData, setTrendData] = useState<{ timestamp: string; confidence: number; anomaly_rate: number }[]>([]);
   const [taskType, setTaskType] = useState<string>('defect_detection');
   const [health, setHealth] = useState<any>(null);
   const [proxyMetrics, setProxyMetrics] = useState<PM | undefined>(undefined);
 
   const { connected, lastMessage } = useWebSocket('ws://localhost:8000/ws/stream');
+
+  const refreshHistory = useCallback(() => {
+    listInspections({ limit: 50 }).then(setInspections);
+    getStats().then(setStats);
+  }, []);
 
   useEffect(() => {
     if (lastMessage && lastMessage.type === 'result') {
@@ -41,19 +51,20 @@ const App: React.FC = () => {
         {
           timestamp: new Date().toISOString(),
           confidence: lastMessage.data.confidence ?? 0,
-          anomaly_rate: lastMessage.data.anomaly_rate ?? 0,
+          anomaly_rate: lastMessage.data.findings?.length > 0 ? 1 : 0,
         },
       ]);
+      refreshHistory();
     }
     if (lastMessage && lastMessage.type === 'metrics') {
       setProxyMetrics(lastMessage.data);
     }
-  }, [lastMessage]);
+  }, [lastMessage, refreshHistory]);
 
   useEffect(() => {
-    listReports().then(setReports);
+    refreshHistory();
     getHealth().then(setHealth);
-  }, []);
+  }, [refreshHistory]);
 
   const handleTrigger = useCallback(() => {
     setLoading(true);
@@ -68,11 +79,10 @@ const App: React.FC = () => {
             anomaly_rate: resultData.findings?.length > 0 ? 1 : 0,
           },
         ]);
-        return listReports();
+        refreshHistory();
       })
-      .then(setReports)
       .finally(() => setLoading(false));
-  }, [taskType]);
+  }, [taskType, refreshHistory]);
 
   const handleUpload = useCallback((file: File) => {
     setLoading(true);
@@ -83,14 +93,13 @@ const App: React.FC = () => {
       })
       .then((resultData: InspectionResult) => {
         setResult(resultData);
-        return listReports();
+        refreshHistory();
       })
-      .then(setReports)
       .finally(() => setLoading(false));
-  }, [taskType]);
+  }, [taskType, refreshHistory]);
 
-  const handleDownload = useCallback((filename: string) => {
-    window.open(`/api/report/${filename}`, '_blank');
+  const handleDownload = useCallback((jobId: string) => {
+    window.open(`/report/${jobId}`, '_blank');
   }, []);
 
   return (
@@ -131,8 +140,9 @@ const App: React.FC = () => {
             {proxyMetrics && <ProxyMetrics metrics={proxyMetrics} />}
           </Grid>
           <Grid item xs={12} md={4}>
+            <InspectionStats stats={stats} />
             <ProcessTrends data={trendData} />
-            <ReportHistory reports={reports} onDownload={handleDownload} />
+            <ReportHistory inspections={inspections} onDownload={handleDownload} />
           </Grid>
         </Grid>
       </Box>

@@ -18,6 +18,7 @@ from backend.proxy_metrics import record_inference, get_metrics_collector
 from backend.report_generator import generate_report, get_reports_dir
 from backend.model_versioning import get_version_manager
 from backend.camera_manager import get_camera_manager
+from backend.database import init_db, save_inspection, get_inspection, list_inspections, get_stats
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class ConnectionManager:
     def __init__(self):
@@ -50,12 +52,16 @@ class ConnectionManager:
             except WebSocketDisconnect:
                 self.active.remove(ws)
 
+
 manager = ConnectionManager()
+# Short-term in-memory cache — survives only while the process is running.
+# DB is the source of truth for anything older than the current session.
 _job_store: dict = {}
 
 
 @app.on_event("startup")
 async def startup():
+    init_db()
     input_cfg = load_input_config()
     cam_cfg = input_cfg["input"]["live_camera"]
     cam = get_camera_manager()
@@ -65,90 +71,93 @@ async def startup():
     )
 
 
+# ---------------------------------------------------------------------------
+# Camera stream
+# ---------------------------------------------------------------------------
+
 @app.get("/stream")
 async def mjpeg_stream():
-    """MJPEG stream from the live camera — open directly in an <img> tag."""
     async def generate():
         cam = get_camera_manager()
         while True:
             frame = cam.get_latest_frame()
             if frame is not None:
-                _, jpeg = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
-                )
+                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
+                    b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
                     + jpeg.tobytes()
                     + b"\r\n"
                 )
-            await asyncio.sleep(1 / 15)  # 15 fps
+            await asyncio.sleep(1 / 15)
 
-    return StreamingResponse(
-        generate(), media_type="multipart/x-mixed-replace; boundary=frame"
-    )
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
-def _run_inspection(task_type: str, source: str, job_id: str) -> dict:
-    """Blocking: ingest → preprocess → VLM → metrics. Run in executor."""
-    input_cfg = load_input_config()
-    inspection_cfg = load_inspection_config()
-    vlm_cfg = load_vlm_config()
+# ---------------------------------------------------------------------------
+# Inspection pipeline helpers
+# ---------------------------------------------------------------------------
 
-    ingester = Ingester(input_cfg["input"]["live_camera"])
-    vlm = VLMRouter(vlm_cfg)
-
-    ingest_result = ingester.ingest_camera_frame()
-
-    if not ingest_result.frames:
-        logger.warning("No camera frame available — returning empty result")
-        return {
-            "job_id": job_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "task_type": task_type,
-            "findings": [],
-            "confidence": 0.0,
-            "pass_fail": "UNKNOWN",
-            "notes": "No camera frame available",
-            "model_used": "none",
-            "latency_ms": 0.0,
-        }
-
-    frame = ingest_result.frames[0]
-    preprocessed = preprocess_frame(frame, inspection_cfg["preprocessing"])
-    image_b64 = frame_to_base64(preprocessed)
-
-    vlm_result = vlm.call(task_type, image_b64)
-
-    latency_ms = vlm_result.get("latency_ms", 0.0)
-    confidence = vlm_result.get("confidence", 0.0)
-    record_inference(latency_ms, confidence)
-
-    metrics_collector = get_metrics_collector()
-    metrics = metrics_collector.get_metrics()
-
-    version_manager = get_version_manager()
-    active_version = version_manager.get_active_version()
-    model_version_str = (
-        active_version["model_name"] if active_version else vlm_result.get("model", "unknown")
-    )
-
-    generate_report(job_id, source, vlm_result, metrics, model_version_str)
-    report_path = get_reports_dir() / f"{job_id}.md"
-
+def _build_job(job_id: str, task_type: str, source: str,
+               vlm_result: dict, report_path: Path) -> dict:
     return {
         "job_id": job_id,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "task_type": task_type,
+        "source": source,
         "findings": vlm_result.get("findings", []),
-        "confidence": confidence,
+        "confidence": float(vlm_result.get("confidence", 0.0)),
         "pass_fail": vlm_result.get("pass_fail", "UNKNOWN"),
         "notes": vlm_result.get("notes", ""),
         "model_used": vlm_result.get("model", "unknown"),
-        "latency_ms": latency_ms,
+        "latency_ms": float(vlm_result.get("latency_ms", 0.0)),
+        "finding_count": len(vlm_result.get("findings", [])),
         "report_path": str(report_path),
     }
 
+
+def _run_vlm(frame, task_type: str) -> dict:
+    inspection_cfg = load_inspection_config()
+    vlm_cfg = load_vlm_config()
+    vlm = VLMRouter(vlm_cfg)
+    preprocessed = preprocess_frame(frame, inspection_cfg["preprocessing"])
+    image_b64 = frame_to_base64(preprocessed)
+    return vlm.call(task_type, image_b64)
+
+
+def _run_inspection(task_type: str, source: str, job_id: str) -> dict:
+    """Blocking: ingest → preprocess → VLM → record metrics → persist."""
+    input_cfg = load_input_config()
+    ingester = Ingester(input_cfg["input"]["live_camera"])
+    ingest_result = ingester.ingest_camera_frame()
+
+    if not ingest_result.frames:
+        logger.warning("No camera frame — returning empty result")
+        vlm_result = {
+            "findings": [], "confidence": 0.0,
+            "pass_fail": "UNKNOWN", "notes": "No camera frame available",
+            "model": "none", "latency_ms": 0.0,
+        }
+    else:
+        vlm_result = _run_vlm(ingest_result.frames[0], task_type)
+
+    record_inference(vlm_result.get("latency_ms", 0.0), vlm_result.get("confidence", 0.0))
+    metrics = get_metrics_collector().get_metrics()
+
+    version_manager = get_version_manager()
+    active_ver = version_manager.get_active_version()
+    model_ver = active_ver["model_name"] if active_ver else vlm_result.get("model", "unknown")
+
+    generate_report(job_id, source, vlm_result, metrics, model_ver)
+    report_path = get_reports_dir() / f"{job_id}.md"
+
+    job = _build_job(job_id, task_type, source, vlm_result, report_path)
+    save_inspection(job)
+    return job
+
+
+# ---------------------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------------------
 
 @app.post("/upload")
 async def upload(file: UploadFile, task_type: str = "defect_detection"):
@@ -157,57 +166,34 @@ async def upload(file: UploadFile, task_type: str = "defect_detection"):
     filename = file.filename or "upload"
 
     input_cfg = load_input_config()
-    inspection_cfg = load_inspection_config()
-    vlm_cfg = load_vlm_config()
-
     loop = asyncio.get_event_loop()
     ingester = Ingester(input_cfg["input"]["live_camera"])
-    vlm = VLMRouter(vlm_cfg)
-
-    ingest_result = await loop.run_in_executor(
-        None, ingester.ingest_upload, file_bytes, filename
-    )
+    ingest_result = await loop.run_in_executor(None, ingester.ingest_upload, file_bytes, filename)
 
     if not ingest_result.frames:
         raise HTTPException(status_code=422, detail="Could not decode image")
 
-    frame = ingest_result.frames[0]
-    preprocessed = preprocess_frame(frame, inspection_cfg["preprocessing"])
-    image_b64 = frame_to_base64(preprocessed)
+    vlm_result = await loop.run_in_executor(None, _run_vlm, ingest_result.frames[0], task_type)
 
-    vlm_result = await loop.run_in_executor(None, vlm.call, task_type, image_b64)
-
-    latency_ms = vlm_result.get("latency_ms", 0.0)
-    confidence = vlm_result.get("confidence", 0.0)
-    record_inference(latency_ms, confidence)
-
-    metrics_collector = get_metrics_collector()
-    metrics = metrics_collector.get_metrics()
+    record_inference(vlm_result.get("latency_ms", 0.0), vlm_result.get("confidence", 0.0))
+    metrics = get_metrics_collector().get_metrics()
     version_manager = get_version_manager()
-    active_version = version_manager.get_active_version()
-    model_version_str = (
-        active_version["model_name"] if active_version else vlm_result.get("model", "unknown")
-    )
+    active_ver = version_manager.get_active_version()
+    model_ver = active_ver["model_name"] if active_ver else vlm_result.get("model", "unknown")
 
-    generate_report(job_id, task_type, vlm_result, metrics, model_version_str)
+    generate_report(job_id, task_type, vlm_result, metrics, model_ver)
     report_path = get_reports_dir() / f"{job_id}.md"
 
-    job_data = {
-        "job_id": job_id,
-        "timestamp": datetime.utcnow().isoformat(),
-        "task_type": task_type,
-        "findings": vlm_result.get("findings", []),
-        "confidence": confidence,
-        "pass_fail": vlm_result.get("pass_fail", "UNKNOWN"),
-        "notes": vlm_result.get("notes", ""),
-        "model_used": vlm_result.get("model", "unknown"),
-        "latency_ms": latency_ms,
-        "report_path": str(report_path),
-    }
-    _job_store[job_id] = job_data
-    await manager.broadcast({"type": "result", "data": job_data})
-    return job_data
+    job = _build_job(job_id, task_type, filename, vlm_result, report_path)
+    _job_store[job_id] = job
+    await loop.run_in_executor(None, save_inspection, job)
+    await manager.broadcast({"type": "result", "data": job})
+    return job
 
+
+# ---------------------------------------------------------------------------
+# Inspect (live camera trigger)
+# ---------------------------------------------------------------------------
 
 @app.post("/inspect")
 async def inspect(body: dict):
@@ -218,68 +204,102 @@ async def inspect(body: dict):
 
     job_id = uuid.uuid4().hex[:8]
     loop = asyncio.get_event_loop()
-    job_data = await loop.run_in_executor(None, _run_inspection, task_type, source, job_id)
+    job = await loop.run_in_executor(None, _run_inspection, task_type, source, job_id)
+    _job_store[job_id] = job
+    await manager.broadcast({"type": "result", "data": job})
+    return job
 
-    _job_store[job_id] = job_data
-    await manager.broadcast({"type": "result", "data": job_data})
-    return job_data
 
+# ---------------------------------------------------------------------------
+# Results / inspections
+# ---------------------------------------------------------------------------
 
 @app.get("/results/{job_id}")
 async def get_results(job_id: str):
-    if job_id not in _job_store:
+    if job_id in _job_store:
+        return _job_store[job_id]
+    loop = asyncio.get_event_loop()
+    record = await loop.run_in_executor(None, get_inspection, job_id)
+    if not record:
         raise HTTPException(status_code=404, detail="Job not found")
-    return _job_store[job_id]
+    return record
 
+
+@app.get("/inspections")
+async def get_inspections(
+    limit: int = 50,
+    offset: int = 0,
+    task_type: str | None = None,
+    pass_fail: str | None = None,
+    since: str | None = None,
+):
+    loop = asyncio.get_event_loop()
+    records = await loop.run_in_executor(
+        None, list_inspections, limit, offset, task_type, pass_fail, since
+    )
+    return records
+
+
+@app.get("/inspections/stats")
+async def inspection_stats():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_stats)
+
+
+# ---------------------------------------------------------------------------
+# Reports (legacy — kept for backward compat, now queries DB)
+# ---------------------------------------------------------------------------
 
 @app.get("/reports")
-async def list_reports():
-    reports_dir = get_reports_dir()
-    if not reports_dir.exists():
-        return []
-    report_files = sorted(
-        [f for f in reports_dir.iterdir() if f.is_file() and f.suffix == ".md"],
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
+async def list_reports(limit: int = 50):
+    loop = asyncio.get_event_loop()
+    records = await loop.run_in_executor(None, list_inspections, limit, 0, None, None, None)
+    # Shape to old Report schema for any callers that haven't updated
     return [
         {
-            "filename": f.name,
-            "size_bytes": f.stat().st_size,
-            "created_at": datetime.utcfromtimestamp(f.stat().st_mtime).isoformat() + "Z",
+            "filename": f"{r['job_id']}.md",
+            "size_bytes": Path(r["report_path"]).stat().st_size if Path(r["report_path"]).exists() else 0,
+            "created_at": r["timestamp"],
+            **r,
         }
-        for f in report_files
+        for r in records
     ]
 
 
 @app.post("/report/{job_id}")
 async def get_report(job_id: str):
-    if job_id not in _job_store:
+    record = _job_store.get(job_id) or get_inspection(job_id)
+    if not record:
         raise HTTPException(status_code=404, detail="Job not found")
-    report_path = Path(_job_store[job_id]["report_path"])
+    report_path = Path(record["report_path"])
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Report file not found")
     return {"report_path": str(report_path), "report_content": report_path.read_text()}
 
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
 @app.get("/models/versions")
 async def list_model_versions():
-    version_manager = get_version_manager()
-    return {"versions": version_manager.list_versions()}
+    return {"versions": get_version_manager().list_versions()}
 
 
 @app.post("/models/rollback")
 async def rollback_model(body: dict):
-    version_manager = get_version_manager()
     version = body.get("version")
     if not version:
         raise HTTPException(status_code=400, detail="version is required")
-    success = version_manager.rollback(version)
+    success = get_version_manager().rollback(version)
     return {"status": "success" if success else "failure"}
 
 
+# ---------------------------------------------------------------------------
+# Cameras
+# ---------------------------------------------------------------------------
+
 def _probe_cameras() -> list[dict]:
-    """Blocking — run in executor. Probes indices 0-9 for available cameras."""
     import sys
     found = []
     for idx in range(10):
@@ -300,10 +320,7 @@ async def list_cameras():
     cameras = await loop.run_in_executor(None, _probe_cameras)
     active = cam.active_source
     for c in cameras:
-        c["active"] = (
-            c["device_index"] == active["device_index"]
-            and active["stream_url"] == ""
-        )
+        c["active"] = (c["device_index"] == active["device_index"] and active["stream_url"] == "")
     return {"cameras": cameras, "active": active, "paused": cam.paused}
 
 
@@ -331,6 +348,10 @@ async def select_camera(body: dict):
     return {"status": "ok", "device_index": device_index, "stream_url": stream_url}
 
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 async def health_check():
     import httpx
@@ -343,6 +364,10 @@ async def health_check():
         pass
     return {"status": "ok", "ollama_reachable": ollama_reachable}
 
+
+# ---------------------------------------------------------------------------
+# WebSocket
+# ---------------------------------------------------------------------------
 
 @app.websocket("/ws/stream")
 async def websocket_endpoint(websocket: WebSocket):
@@ -357,9 +382,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             job_id = uuid.uuid4().hex[:8]
             loop = asyncio.get_event_loop()
-            job_data = await loop.run_in_executor(None, _run_inspection, task_type, source, job_id)
-            _job_store[job_id] = job_data
-            await manager.broadcast({"type": "result", "data": job_data})
+            job = await loop.run_in_executor(None, _run_inspection, task_type, source, job_id)
+            _job_store[job_id] = job
+            await manager.broadcast({"type": "result", "data": job})
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
 

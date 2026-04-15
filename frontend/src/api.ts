@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { InspectionResult, Report } from './types';
+import { InspectionResult, Report, InspectionRecord, InspectionStats } from './types';
 
 const client: AxiosInstance = axios.create({
   baseURL: '/',
@@ -56,5 +56,21 @@ export const toggleCamera = async (): Promise<{ paused: boolean }> => {
 
 export const selectCamera = async (deviceIndex: number, streamUrl: string = ''): Promise<any> => {
   const response = await client.post('/cameras/select', { device_index: deviceIndex, stream_url: streamUrl });
+  return response.data;
+};
+
+export const listInspections = async (params?: {
+  limit?: number;
+  offset?: number;
+  task_type?: string;
+  pass_fail?: string;
+  since?: string;
+}): Promise<InspectionRecord[]> => {
+  const response = await client.get('/inspections', { params });
+  return response.data;
+};
+
+export const getStats = async (): Promise<InspectionStats> => {
+  const response = await client.get('/inspections/stats');
   return response.data;
 };
