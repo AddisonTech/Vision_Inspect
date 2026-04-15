@@ -60,6 +60,40 @@ manager = ConnectionManager()
 _job_store: dict = {}
 
 
+def _on_keyence_result(result: dict) -> None:
+    """
+    Called by the EtherNet/IP poller on every new inspection.
+    Saves to DB and schedules a WebSocket broadcast.
+    Runs in the executor thread — uses asyncio.run_coroutine_threadsafe.
+    """
+    job_id = uuid.uuid4().hex[:8]
+    job = {
+        "job_id": job_id,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "task_type": "keyence_inspection",
+        "source": "keyence_camera",
+        "findings": [],
+        "confidence": 1.0 if result.get("pass_fail") == "PASS" else 0.0,
+        "pass_fail": result.get("pass_fail", "UNKNOWN"),
+        "notes": f"Program {result.get('program_number', '?')} | Count {result.get('inspection_count', '?')}",
+        "model_used": "keyence_vs_l1500cx",
+        "latency_ms": 0.0,
+        "finding_count": 0,
+        "report_path": "",
+    }
+    _job_store[job_id] = job
+    save_inspection(job)
+
+    # Broadcast to WebSocket clients from the event loop
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({"type": "result", "data": job}),
+            loop,
+        )
+    logger.info("keyence: saved job %s — %s", job_id, job["pass_fail"])
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -74,6 +108,7 @@ async def startup():
     )
     if cam_cfg.get("gige_ip"):
         keyence_listener.start_poller(host=cam_cfg["gige_ip"], port=44818)
+        keyence_listener.set_result_callback(_on_keyence_result)
         logger.info("Keyence EtherNet/IP poller started → %s:44818", cam_cfg["gige_ip"])
 
 

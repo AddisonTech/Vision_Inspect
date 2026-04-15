@@ -25,9 +25,16 @@ import asyncio
 import logging
 import struct
 import time
-from typing import Optional
+from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+
+# Callback fired on every new inspection result: fn(result: dict)
+_on_result: Optional[Callable[[dict], None]] = None
+
+def set_result_callback(fn: Callable[[dict], None]) -> None:
+    global _on_result
+    _on_result = fn
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -153,6 +160,11 @@ async def _poll_loop(host: str, port: int, interval: float = 0.25):
                                     "keyence_eip: new result — %s  count=%d  prog=%d",
                                     decoded["pass_fail"], new_count, decoded["program_number"],
                                 )
+                                if _on_result:
+                                    try:
+                                        _on_result(get_latest_result())
+                                    except Exception as cb_exc:
+                                        logger.error("keyence_eip: result callback error: %s", cb_exc)
 
                     await asyncio.sleep(interval)
 
