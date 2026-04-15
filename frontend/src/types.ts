@@ -26,4 +26,5 @@ export interface ProxyMetrics {
 export interface Report {
   filename: string;
   size_bytes: number;
+  created_at: string;
 }

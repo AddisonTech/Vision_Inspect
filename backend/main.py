@@ -237,8 +237,19 @@ async def list_reports():
     reports_dir = get_reports_dir()
     if not reports_dir.exists():
         return []
-    report_files = [f for f in reports_dir.iterdir() if f.is_file() and f.suffix == ".md"]
-    return [{"filename": f.name, "size_bytes": f.stat().st_size} for f in report_files]
+    report_files = sorted(
+        [f for f in reports_dir.iterdir() if f.is_file() and f.suffix == ".md"],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    return [
+        {
+            "filename": f.name,
+            "size_bytes": f.stat().st_size,
+            "created_at": datetime.utcfromtimestamp(f.stat().st_mtime).isoformat() + "Z",
+        }
+        for f in report_files
+    ]
 
 
 @app.post("/report/{job_id}")
