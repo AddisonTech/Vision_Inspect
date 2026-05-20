@@ -41,7 +41,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8001
 # Frontend (separate terminal)
 cd frontend
 npm install
-npm start
+npm run dev
 `
 
 ## Configuration
